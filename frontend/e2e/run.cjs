@@ -1,0 +1,131 @@
+const { chromium } = require('playwright');
+const assert = require('node:assert/strict');
+
+(async () => {
+  const base = process.env.MESSAGE_CENTER_BASE_URL;
+  if (!base) throw new Error('Set MESSAGE_CENTER_BASE_URL to an isolated Message Center server. This test creates and changes data.');
+  const browser = await chromium.launch({ headless: true, ...(process.env.MESSAGE_CENTER_BROWSER_CHANNEL ? { channel: process.env.MESSAGE_CENTER_BROWSER_CHANNEL } : {}) });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+  const errors = [];
+  page.setDefaultTimeout(5000);
+  page.on('pageerror', e => { errors.push(e.message); console.error('Page error:', e); });
+  const unique = Date.now().toString();
+  const title = `Browser acceptance ${unique}`;
+  try {
+    await page.goto(base);
+    await page.getByRole('button', { name: 'Continue to workspace' }).click();
+    await page.getByRole('heading', { name: 'Message operations' }).waitFor();
+    await page.getByRole('button', { name: 'Subscriptions', exact: true }).click();
+    await page.getByRole('button', { name: 'Add subscription' }).click();
+    let dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Recipient').selectOption('owner-maya');
+    await dialog.getByLabel('Topic').fill(`topic-${unique}`);
+    await dialog.getByLabel('Delivery mode').selectOption('digest');
+    await dialog.getByRole('button', { name: 'Add subscription' }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    await page.getByText(`topic-${unique}`).waitFor();
+    await page.getByRole('switch', { name: 'Disable subscription for Maya' }).last().click();
+    await page.getByRole('switch', { name: 'Enable subscription for Maya' }).last().click();
+    await page.getByRole('button', { name: 'Sources', exact: true }).click();
+    await page.getByRole('button', { name: 'Add source' }).click();
+    dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Source name').fill(`Webhook ${unique}`);
+    await dialog.getByLabel('Source token').fill('acceptance-test-token');
+    await dialog.getByRole('button', { name: 'Add source' }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    await page.getByText(`Webhook ${unique}`).waitFor();
+    await page.getByRole('switch', { name: `Disable Webhook ${unique}` }).click();
+    await page.getByRole('switch', { name: `Enable Webhook ${unique}` }).waitFor();
+    await page.getByRole('button', { name: 'Add source' }).click();
+    dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Source name').fill(`Polling ${unique}`);
+    await dialog.getByLabel('Source type').selectOption('poll');
+    await dialog.getByLabel('JSON endpoint URL').fill('https://example.com/messages');
+    await dialog.getByLabel('Poll interval (seconds)').fill('120');
+    await dialog.getByRole('button', { name: 'Add source' }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    await page.getByText(`Polling ${unique}`).waitFor();
+    await page.getByRole('button', { name: `Edit Polling ${unique}` }).click();
+    dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Poll interval (seconds)').fill('180');
+    await dialog.getByRole('button', { name: 'Save changes' }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: 'Messages', exact: true }).click();
+    await page.getByRole('button', { name: 'Compose message' }).click();
+    dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Title', { exact: true }).fill(title);
+    await dialog.getByLabel('Message', { exact: true }).fill('Browser acceptance message body.');
+    await dialog.getByLabel('Topic').fill(`topic-${unique}`);
+    await dialog.getByRole('button', { name: 'Publish message' }).dblclick();
+    await dialog.waitFor({ state: 'hidden' });
+    const published = await (await page.request.get(`${base}/api/messages?q=${encodeURIComponent(title)}`)).json();
+    assert.equal(published.filter(message => message.title === title).length, 1);
+    await page.getByText(title, { exact: true }).click();
+    let drawer = page.getByRole('complementary', { name: 'Message details' });
+    await drawer.getByText('Maya', { exact: true }).waitFor();
+    await drawer.getByText('Digest · Version 1').waitFor();
+    await drawer.getByRole('button', { name: 'Add feedback' }).click();
+    dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Person').selectOption('owner-maya');
+    await dialog.getByLabel('Response').selectOption('attending');
+    await dialog.getByLabel('Note (optional)').fill('I will attend');
+    await dialog.getByRole('button', { name: 'Record feedback' }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    await drawer.getByText('I will attend').waitFor();
+    await drawer.getByRole('button', { name: 'Edit message' }).click();
+    dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Message', { exact: true }).fill('Updated browser acceptance message.');
+    await dialog.getByRole('button', { name: 'Save changes' }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    await drawer.locator('.detail-body').getByText('Updated browser acceptance message.').waitFor();
+    await drawer.getByText('VERSION 2', { exact: true }).waitFor();
+    await drawer.getByText('Digest · Version 2').waitFor();
+    await drawer.getByRole('button', { name: 'Close details' }).click();
+    await page.getByRole('button', { name: 'Deliveries', exact: true }).click();
+    if (process.env.MESSAGE_CENTER_FIXTURE_TOKEN) {
+      const records = await (await page.request.get(`${base}/api/messages`)).json();
+      const created = records.find(message => message.title === title);
+      const deliveries = await (await page.request.get(`${base}/api/deliveries?message_id=${created.id}`)).json();
+      const current = deliveries.find(delivery => delivery.version === 2 && delivery.owner_id === 'owner-maya');
+      const result = await page.request.post(`${base}/api/integrations/duet/deliveries/${current.id}/result`, { headers: { 'X-Message-Center-Token': process.env.MESSAGE_CENTER_FIXTURE_TOKEN }, data: { owner_id: 'owner-maya', status: 'failed', notified: false } });
+      assert.equal(result.status(), 200);
+      await page.getByRole('button', { name: 'Refresh data' }).click();
+      await page.getByText(title, { exact: true }).first().click();
+      let failed = page.getByRole('complementary', { name: 'Delivery details' });
+      await failed.getByText('Failed', { exact: true }).waitFor();
+      await failed.getByRole('button', { name: 'Retry delivery' }).click();
+      await failed.waitFor({ state: 'hidden' });
+    }
+    await page.getByText(title, { exact: true }).first().click();
+    drawer = page.getByRole('complementary', { name: 'Delivery details' });
+    await drawer.getByText('Maya', { exact: true }).waitFor();
+    await drawer.getByText('Owner update confirmed', { exact: true }).waitFor();
+    await drawer.getByText('Not confirmed', { exact: true }).waitFor();
+    await drawer.getByRole('button', { name: 'View message' }).click();
+    drawer = page.getByRole('complementary', { name: 'Message details' });
+    page.once('dialog', dialog => dialog.accept());
+    await drawer.getByRole('button', { name: 'Withdraw message' }).click();
+    await drawer.getByText('Withdrawn', { exact: true }).waitFor();
+    await drawer.getByRole('button', { name: 'Close details' }).click();
+    for (const account of ['DEV-BBB', 'DEV-CCC']) {
+      await page.getByRole('button', { name: 'Sign out' }).click();
+      await page.getByLabel('Demo account').selectOption(account);
+      await page.getByRole('button', { name: 'Continue to workspace' }).click();
+      await page.getByRole('heading', { name: 'Message operations' }).waitFor();
+      await page.getByRole('button', { name: 'Messages', exact: true }).click();
+      await page.getByText(title, { exact: true }).waitFor();
+    }
+    if (process.env.MESSAGE_CENTER_TEST_PAGINATION) {
+      for (let i = 0; i < 101; i++) {
+        const result = await page.request.post(`${base}/api/messages`, { data: { title: `Pagination ${unique} ${i}`, body: 'Pagination acceptance fixture' } });
+        assert.equal(result.status(), 200);
+      }
+      await page.getByRole('button', { name: 'Refresh data' }).click();
+      await page.getByLabel('Search messages').fill(`Pagination ${unique} 0`);
+      await page.getByRole('button', { name: `Pagination ${unique} 0`, exact: true }).waitFor();
+    }
+    assert.deepEqual(errors, []);
+    if (process.env.MESSAGE_CENTER_SCREENSHOT) await page.screenshot({ path: process.env.MESSAGE_CENTER_SCREENSHOT, fullPage: true });
+    console.log('Browser acceptance passed: subscription, source, publish, feedback, edit, deliveries and withdrawal.');
+  } catch (error) { await page.screenshot({ path: '/tmp/message-center-failure.png' }); console.error('Page text:', await page.locator('body').innerText()); throw error; } finally { await browser.close(); }
+})().catch(e => { console.error(e); process.exit(1); });

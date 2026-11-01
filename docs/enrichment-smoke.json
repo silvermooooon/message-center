@@ -1,0 +1,12 @@
+{
+  "date": "2026-11-02",
+  "scenario": "Synthetic maintenance notice in a disposable PostgreSQL schema",
+  "model": "gpt-6-luna",
+  "provider_attempts": 1,
+  "attempt_limit": 2,
+  "http_status": 200,
+  "classification": "Benign informational notice",
+  "summary": "The message states that a test maintenance window is scheduled for Tuesday at 10:00 and that no action is required.",
+  "original_body_preserved": true,
+  "test_schema_dropped": true
+}
