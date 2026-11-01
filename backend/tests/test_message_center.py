@@ -163,6 +163,7 @@ def test_callback_result_race_and_digest_null_request(client, monkeypatch):
 
 
 def test_poll_dedup_and_enrichment_failure_preserves_original(client, monkeypatch):
+    client.post("/api/subscriptions", json={"owner_id": "owner-maya", "mode": "digest"})
     source = client.post(
         "/api/sources",
         json={
@@ -189,6 +190,8 @@ def test_poll_dedup_and_enrichment_failure_preserves_original(client, monkeypatc
     worker.poll_sources()
     messages = client.get("/api/messages").json()
     assert len(messages) == 1
+    deliveries = client.get(f"/api/messages/{messages[0]['id']}").json()["deliveries"]
+    assert [(item["owner_id"], item["mode"]) for item in deliveries] == [("owner-maya", "digest")]
     monkeypatch.setattr("app.enrichment.enabled", lambda: True)
 
     async def failed(*args):
@@ -217,6 +220,53 @@ def test_service_auth_and_subscriptions(client):
         ).status_code
         == 409
     )
+
+
+def test_service_invitation_targets_only_explicit_recipients(client, monkeypatch):
+    headers = {"X-Message-Center-Token": "test-token"}
+    for owner in ("owner-alex", "owner-maya", "owner-jordan"):
+        client.post("/api/subscriptions", json={"owner_id": owner, "mode": "digest"})
+    payload = {
+        "owner_id": "owner-jordan",
+        "client_request_key": "invitation-1",
+        "title": "Team lunch",
+        "body": "Lunch on Friday",
+        "kind": "invitation",
+        "recipients": ["owner-alex", "owner-maya", "owner-alex"],
+        "metadata": {"activity": "lunch"},
+    }
+    path = "/api/integrations/duet/messages"
+    message = client.post(path, headers=headers, json=payload).json()
+    assert client.post(path, headers=headers, json=payload).json()["id"] == message["id"]
+    deliveries = client.get(f"/api/messages/{message['id']}").json()["deliveries"]
+    assert {(d["owner_id"], d["mode"]) for d in deliveries} == {
+        ("owner-alex", "immediate"),
+        ("owner-maya", "immediate"),
+    }
+
+    sent = []
+
+    def accept(url, **kwargs):
+        sent.append(kwargs["json"])
+        return httpx.Response(
+            200,
+            json={"request_id": "request-1", "status": "accepted"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(worker.httpx, "post", accept)
+    worker.deliver_due()
+    assert {item["owner_id"] for item in sent} == {"owner-alex", "owner-maya"}
+    assert len(sent) == 2
+    assert all(item["message"]["kind"] == "invitation" for item in sent)
+    assert all(item["message"]["metadata"] == {"activity": "lunch"} for item in sent)
+    response = client.post(
+        f"{path}/{message['id']}/responses",
+        headers=headers,
+        json={"owner_id": "owner-maya", "response": "attending"},
+    )
+    assert response.status_code == 200
+    assert client.get(f"/api/messages/{message['id']}").json()["response_counts"]["attending"] == 1
 
 
 def test_metadata_pagination_expiry_and_subscription_replay(client):
