@@ -1,10 +1,19 @@
 import json
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator
 
-from .service import OWNERS
+from .service import PEOPLE
+
+
+def known_owner(value: str) -> str:
+    if not any(person["owner_id"] == value for person in PEOPLE):
+        raise ValueError("Unknown owner")
+    return value
+
+
+OwnerId = Annotated[str, Field(min_length=1, max_length=100), AfterValidator(known_owner)]
 
 
 class Login(BaseModel):
@@ -21,7 +30,7 @@ class MessageInput(BaseModel):
     publisher: str | None = Field(default=None, max_length=200)
     topic: str | None = Field(default=None, max_length=200)
     channel: str | None = Field(default=None, max_length=200)
-    recipients: list[str] = Field(default_factory=list)
+    recipients: list[OwnerId] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
     expires_at: datetime | None = None
 
@@ -35,8 +44,6 @@ class MessageInput(BaseModel):
     @field_validator("recipients")
     @classmethod
     def validate_recipients(cls, value):
-        if not set(value) <= OWNERS:
-            raise ValueError("Unknown recipient")
         return list(dict.fromkeys(value))
 
     @field_validator("expires_at")
@@ -54,7 +61,7 @@ class MessagePatch(BaseModel):
     publisher: str | None = Field(default=None, max_length=200)
     topic: str | None = Field(default=None, max_length=200)
     channel: str | None = Field(default=None, max_length=200)
-    recipients: list[str] | None = None
+    recipients: list[OwnerId] | None = None
     metadata: dict | None = None
     expires_at: datetime | None = None
 
@@ -68,8 +75,6 @@ class MessagePatch(BaseModel):
     @field_validator("recipients")
     @classmethod
     def validate_recipients(cls, value):
-        if value is not None and not set(value) <= OWNERS:
-            raise ValueError("Unknown recipient")
         return list(dict.fromkeys(value)) if value is not None else value
 
     @field_validator("expires_at")
@@ -99,7 +104,7 @@ class SourcePatch(BaseModel):
 
 
 class SubscriptionInput(BaseModel):
-    owner_id: Literal["owner-alex", "owner-maya", "owner-jordan"]
+    owner_id: OwnerId
     channel: str | None = Field(default=None, max_length=200)
     topic: str | None = Field(default=None, max_length=200)
     mode: Literal["immediate", "digest"] = "immediate"
@@ -107,7 +112,7 @@ class SubscriptionInput(BaseModel):
 
 
 class SubscriptionPatch(BaseModel):
-    owner_id: Literal["owner-alex", "owner-maya", "owner-jordan"] | None = None
+    owner_id: OwnerId | None = None
     channel: str | None = Field(default=None, max_length=200)
     topic: str | None = Field(default=None, max_length=200)
     mode: Literal["immediate", "digest"] | None = None
@@ -115,28 +120,28 @@ class SubscriptionPatch(BaseModel):
 
 
 class ResponseInput(BaseModel):
-    owner_id: Literal["owner-alex", "owner-maya", "owner-jordan"] | None = None
+    owner_id: OwnerId | None = None
     response: Literal["acknowledge", "attending", "declined"]
     note: str | None = Field(default=None, max_length=4000)
 
 
 class ServiceMessage(MessageInput):
-    owner_id: Literal["owner-alex", "owner-maya", "owner-jordan"]
+    owner_id: OwnerId
     client_request_key: str = Field(min_length=1, max_length=200)
 
 
 class ResultInput(BaseModel):
-    owner_id: Literal["owner-alex", "owner-maya", "owner-jordan"]
+    owner_id: OwnerId
     status: Literal["processed", "failed"]
     notified: bool
     summary: str | None = Field(default=None, max_length=4000)
 
 
 class ReadInput(BaseModel):
-    owner_id: Literal["owner-alex", "owner-maya", "owner-jordan"]
+    owner_id: OwnerId
     read: bool
 
 
 class MarkInput(BaseModel):
-    owner_id: Literal["owner-alex", "owner-maya", "owner-jordan"]
+    owner_id: OwnerId
     consumed: bool

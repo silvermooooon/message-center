@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app import worker
+from app import service, worker
 from app.db import Base, SessionLocal, engine
 from app.main import app
 from app.models import Delivery, now
@@ -267,6 +267,149 @@ def test_service_invitation_targets_only_explicit_recipients(client, monkeypatch
     )
     assert response.status_code == 200
     assert client.get(f"/api/messages/{message['id']}").json()["response_counts"]["attending"] == 1
+
+
+def test_registered_owner_uses_all_delivery_contracts_and_unknown_owner_is_rejected(client):
+    person = {"owner_id": "owner-dev-four", "name": "Developer Four"}
+    service.PEOPLE.append(person)
+    headers = {"X-Message-Center-Token": "test-token"}
+    base = "/api/integrations/duet"
+    try:
+        subscription = client.post(
+            f"{base}/subscriptions",
+            headers=headers,
+            json={"owner_id": person["owner_id"], "topic": "stories"},
+        )
+        assert subscription.status_code == 200
+        subscription_id = subscription.json()["id"]
+        assert (
+            client.patch(
+                f"{base}/subscriptions/{subscription_id}",
+                headers=headers,
+                params={"owner_id": person["owner_id"]},
+                json={"owner_id": person["owner_id"], "mode": "digest"},
+            ).status_code
+            == 200
+        )
+        payload = {
+            "owner_id": person["owner_id"],
+            "client_request_key": "fourth-owner",
+            "title": "Story assignment",
+            "body": "Please review",
+            "recipients": [person["owner_id"], person["owner_id"]],
+        }
+        published = client.post(f"{base}/messages", headers=headers, json=payload)
+        assert published.status_code == 200
+        message = published.json()
+        assert message["publisher"] == person["owner_id"] and message["recipients"] == [
+            person["owner_id"]
+        ]
+        delivery = client.get(f"/api/messages/{message['id']}").json()["deliveries"][0]
+        delivery_path = f"{base}/deliveries/{delivery['id']}"
+        assert (
+            client.post(
+                delivery_path + "/result",
+                headers=headers,
+                json={"owner_id": person["owner_id"], "status": "processed", "notified": False},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                delivery_path + "/mark",
+                headers=headers,
+                json={"owner_id": person["owner_id"], "consumed": True},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                f"/api/deliveries/{delivery['id']}/read",
+                json={"owner_id": person["owner_id"], "read": True},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                f"{base}/messages/{message['id']}/responses",
+                headers=headers,
+                json={"owner_id": person["owner_id"], "response": "acknowledge"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.patch(
+                f"/api/messages/{message['id']}", json={"recipients": [person["owner_id"]]}
+            ).status_code
+            == 200
+        )
+
+        unknown = "owner-not-registered"
+        assert (
+            client.post(
+                f"{base}/messages", headers=headers, json={**payload, "owner_id": unknown}
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                f"{base}/messages", headers=headers, json={**payload, "recipients": [unknown]}
+            ).status_code
+            == 422
+        )
+        assert (
+            client.patch(
+                f"/api/messages/{message['id']}", json={"recipients": [unknown]}
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                f"{base}/subscriptions", headers=headers, json={"owner_id": unknown}
+            ).status_code
+            == 422
+        )
+        assert (
+            client.patch(
+                f"{base}/subscriptions/{subscription_id}",
+                headers=headers,
+                params={"owner_id": person["owner_id"]},
+                json={"owner_id": unknown},
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                delivery_path + "/result",
+                headers=headers,
+                json={"owner_id": unknown, "status": "processed", "notified": False},
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                delivery_path + "/mark",
+                headers=headers,
+                json={"owner_id": unknown, "consumed": True},
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                f"/api/deliveries/{delivery['id']}/read", json={"owner_id": unknown, "read": True}
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                f"{base}/messages/{message['id']}/responses",
+                headers=headers,
+                json={"owner_id": unknown, "response": "acknowledge"},
+            ).status_code
+            == 422
+        )
+    finally:
+        service.PEOPLE.remove(person)
 
 
 def test_metadata_pagination_expiry_and_subscription_replay(client):

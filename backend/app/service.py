@@ -12,7 +12,6 @@ PEOPLE = [
     {"owner_id": "owner-maya", "name": "Maya"},
     {"owner_id": "owner-jordan", "name": "Jordan"},
 ]
-OWNERS = {p["owner_id"] for p in PEOPLE}
 
 
 def row(obj, exclude=()):
